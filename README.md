@@ -33,15 +33,21 @@ An interactive document-based Q&A system powered by LangChain agents, Azure Open
 
 ```
 .
-├── app.py                     # Streamlit UI
+├── app.py                        # Streamlit UI
 ├── agents/
-│   ├── ingestion_agent.py     # Handles parsing uploaded files
-│   ├── retrieval_agent.py     # Embeds text & retrieves relevant chunks
-│   └── llm_response_agent.py  # Calls OpenAI with context & query
-├── assets/                    # Icons, diagrams
-├── .env                       # Azure API keys and endpoints
-├── requirements.txt
-└── README.md
+│   ├── ingestion_agent.py        # Handles parsing uploaded files
+│   ├── retrieval_agent.py        # Embeds text & retrieves relevant chunks
+│   └── llm_response_agent.py     # Calls OpenAI with context & query
+├── assets/                       # Icons, diagrams, and demo screenshots
+│   ├── demo_upload_ui.png        # Snapshot of file upload section
+│   ├── demo_question_input.png   # Snapshot of question input UI
+│   ├── demo_source_context.png   # Snapshot showing retrieved context
+│   ├── demo_answer_display.png   # Snapshot showing LLM response
+│   └── architecture.png          # Project architecture diagram
+├── .env                          # Azure API keys and endpoints
+├── requirements.txt              # Required Python packages
+└── README.md                     # Project overview and instructions
+
 ```
 
 ---
@@ -103,12 +109,7 @@ streamlit run app.py
 
 ---
 
-## 🧪 Demo
 
-- 📸 [Demo snaps](#) *()*
-- 🖼️ [Architecture Diagram](assets/architecture.png) 
-
----
 
 ## 🙋‍♂️ Author
 
