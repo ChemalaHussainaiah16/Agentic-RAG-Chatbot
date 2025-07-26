@@ -1,0 +1,273 @@
+#create one folder agents
+# #save this one file ingestion_agent.py
+
+import os
+import docx2txt
+import pandas as pd
+from pptx import Presentation
+import PyPDF2
+
+class IngestionAgent:
+    def __init__(self):
+        self.supported_formats = ['pdf', 'csv', 'docx', 'pptx', 'txt', 'md']
+
+    def parse_document(self, file_path):
+        ext = file_path.split('.')[-1].lower()
+
+        if not os.path.isfile(file_path) or os.path.getsize(file_path) == 0:
+            print(f" Skipping empty file: {file_path}")
+            return None  # return None for empty file
+
+        if ext == 'pdf':
+            return self._parse_pdf(file_path)
+        elif ext == 'csv':
+            return self._parse_csv(file_path)
+        elif ext == 'docx':
+            return self._parse_docx(file_path)
+        elif ext == 'pptx':
+            return self._parse_pptx(file_path)
+        elif ext in ['txt', 'md']:
+            return self._parse_txt(file_path)
+        else:
+            raise ValueError("Unsupported file format.")
+
+    def _parse_pdf(self, file_path):
+        text = ""
+        with open(file_path, 'rb') as file:
+            reader = PyPDF2.PdfReader(file)
+            for page in reader.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+        return text
+
+    def _parse_csv(self, file_path):
+        df = pd.read_csv(file_path)
+        return df.to_string()
+
+    def _parse_docx(self, file_path):
+        return docx2txt.process(file_path)
+
+    def _parse_pptx(self, file_path):
+        text = ""
+        prs = Presentation(file_path)
+        for slide in prs.slides:
+            for shape in slide.shapes:
+                if hasattr(shape, "text"):
+                    text += shape.text + "\n"
+        return text
+
+    def _parse_txt(self, file_path):
+        with open(file_path, 'r', encoding='utf-8') as file:
+            return file.read()
+
+    def generate_mcp_message(self, parsed_docs, trace_id="ingest-001"):
+        return {
+            "type": "INGESTION_RESULT",
+            "sender": "IngestionAgent",
+            "receiver": "RetrievalAgent",
+            "trace_id": trace_id,
+            "payload": {
+                "documents": parsed_docs
+            }
+        }
+
+
+# in that folder save retrieval_agent.py file
+
+import os
+from langchain_openai import AzureOpenAIEmbeddings
+from langchain.vectorstores import FAISS
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from dotenv import load_dotenv
+
+load_dotenv()
+
+class RetrievalAgent:
+    def __init__(self):
+        self.vector_store = None
+        self.embeddings = AzureOpenAIEmbeddings(
+            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT").strip(),
+            api_key=os.getenv("OPENAI_API_KEY"),
+            api_version=os.getenv("OPENAI_API_VERSION"),
+            deployment=os.getenv("EMBEDDING_DEPLOYMENT_NAME"),
+            model="text-embedding-ada-002",
+            chunk_size=1000
+            )
+
+    def ingest_documents(self, docs: dict):
+        all_chunks = []
+
+        for filename, content in docs.items():
+            splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+            chunks = splitter.split_text(content)
+            metadata_chunks = [{"page_content": chunk, "metadata": {"source": filename}} for chunk in chunks]
+            all_chunks.extend(metadata_chunks)
+
+        texts = [chunk["page_content"] for chunk in all_chunks]
+        metadatas = [chunk["metadata"] for chunk in all_chunks]
+
+        self.vector_store = FAISS.from_texts(texts, self.embeddings, metadatas=metadatas)
+
+    def retrieve_relevant_chunks(self, query: str, k=4):
+        if not self.vector_store:
+            raise ValueError("Vector store is empty. Please ingest documents first.")
+        
+        results = self.vector_store.similarity_search(query, k=k)
+
+        retrieved_chunks = []
+        for res in results:
+            content = res.page_content.strip()
+            source = res.metadata.get("source", "unknown")
+            retrieved_chunks.append(f"{source}: {content}")
+
+        return retrieved_chunks
+
+    def generate_mcp_message(self, retrieved_chunks, query, trace_id="rag-001"):
+        return {
+            "type": "RETRIEVAL_RESULT",
+            "sender": "RetrievalAgent",
+            "receiver": "LLMResponseAgent",
+            "trace_id": trace_id,
+            "payload": {
+                "retrieved_context": retrieved_chunks,
+                "query": query
+            }
+        }
+
+
+# same above add this file to same folder agents
+import os
+from langchain_openai import AzureChatOpenAI
+from dotenv import load_dotenv
+
+load_dotenv()
+
+class LLMResponseAgent:
+    def __init__(self):
+        self.llm = AzureChatOpenAI(
+            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT").strip(),  # ✅ remove \n or space
+            api_key=os.getenv("OPENAI_API_KEY"),
+            api_version=os.getenv("OPENAI_API_VERSION"),
+            deployment_name=os.getenv("LLM_DEPLOYMENT_NAME"),
+            model="gpt-4",
+            temperature=0.3
+            )
+
+
+    def generate_answer(self, mcp_message):
+        query = mcp_message["payload"]["query"]
+        context_chunks = mcp_message["payload"]["retrieved_context"]
+
+        # Combine chunks into a single context string
+        context_text = "\n\n".join(context_chunks)
+
+        system_prompt = (
+            "You are an intelligent assistant. Use the provided context to answer the user's question.\n"
+            "If the answer is not found in the context, say 'The information is not available in the documents.'\n"
+            "Be concise and include relevant source reference if available."
+        )
+
+        user_prompt = f"Context:\n{context_text}\n\nQuestion: {query}"
+
+        response = self.llm.invoke([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ])
+
+        return response.content.strip()
+
+    def generate_mcp_message(self, answer, trace_id="rag-001"):
+        return {
+            "type": "FINAL_ANSWER",
+            "sender": "LLMResponseAgent",
+            "receiver": "UI",
+            "trace_id": trace_id,
+            "payload": {
+                "answer": answer
+            }
+        }
+
+
+#after one new file out of that folder and name it as app.py
+import streamlit as st
+import tempfile
+import os
+
+from agents.ingestion_agent import IngestionAgent
+from agents.retrieval_agent import RetrievalAgent
+from agents.llm_response_agent import LLMResponseAgent
+
+st.set_page_config(page_title=" Agentic RAG Chatbot", layout="wide")
+st.title(" Agentic RAG Chatbot")
+
+# Initialize agents
+ingestion_agent = IngestionAgent()
+retrieval_agent = RetrievalAgent()
+llm_response_agent = LLMResponseAgent()
+
+# Upload Section
+st.sidebar.header("📤 Upload Documents")
+uploaded_files = st.sidebar.file_uploader("Upload files (PDF, CSV, DOCX, etc.)", type=["pdf", "csv", "docx", "pptx", "txt", "md"], accept_multiple_files=True)
+
+# Process documents
+parsed_docs = {}
+
+if uploaded_files:
+    st.sidebar.success(f"{len(uploaded_files)} file(s) uploaded.")
+
+    for uploaded_file in uploaded_files:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[-1]) as tmp_file:
+            tmp_file.write(uploaded_file.read())
+            tmp_path = tmp_file.name
+            try:
+                text = ingestion_agent.parse_document(tmp_path)
+                if text is None or not text.strip():  # ✅ check for empty content
+                    st.warning(f" Cannot read empty file: {uploaded_file.name}")
+                else:
+                    parsed_docs[uploaded_file.name] = text
+            except Exception as e:
+                st.error(f"Error processing {uploaded_file.name}: {e}")
+                
+    if not parsed_docs:
+        st.error(" All uploaded files are empty or unsupported.")
+        st.stop()
+
+
+    # Ingest into vector store
+    retrieval_agent.ingest_documents(parsed_docs)
+    st.sidebar.success(" Documents processed and embedded.")
+
+# Chat Section
+st.subheader("💬 Ask a Question About Your Documents")
+
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+query = st.text_input("Your question:")
+
+if st.button("Get Answer"):
+    if not parsed_docs:
+        st.warning("Please upload and process documents first.")
+    elif not query.strip():
+        st.warning("Please enter a question.")
+    else:
+        # Step 1: Retrieve relevant chunks
+        retrieved_chunks = retrieval_agent.retrieve_relevant_chunks(query)
+
+        # Step 2: Create MCP message and call LLM
+        retrieval_msg = retrieval_agent.generate_mcp_message(retrieved_chunks, query)
+        answer = llm_response_agent.generate_answer(retrieval_msg)
+        final_msg = llm_response_agent.generate_mcp_message(answer)
+
+        # Save chat history
+        st.session_state.chat_history.append((query, answer, retrieved_chunks))
+
+# Display Chat History
+for idx, (q, a, context) in enumerate(reversed(st.session_state.chat_history), 1):
+    st.markdown(f"###  Q{idx}: {q}")
+    st.markdown(f"** Answer:** {a}")
+    with st.expander(" Source Context"):
+        for chunk in context:
+            st.markdown(f"- {chunk}")
+
