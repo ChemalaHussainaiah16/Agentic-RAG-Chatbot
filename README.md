@@ -109,6 +109,8 @@ streamlit run app.py
 
 ---
 
+## Demo snaps
+![image alt](https://github.com/ChemalaHussainaiah16/Agentic-RAG-Chatbot/blob/160c2a46079a3f39bc04275840e91d96cfa8910f/Photo1%20(1).png)
 
 
 ## 🙋‍♂️ Author
